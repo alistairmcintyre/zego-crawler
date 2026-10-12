@@ -93,6 +93,7 @@ Requires [uv](https://docs.astral.sh/uv/).
 make install                                # install dependencies and git hooks
 uv run crawler https://books.toscrape.com
 uv run crawler https://books.toscrape.com -n 50 -c 20 -f jsonl
+uv run crawler https://python.org -n 20     # redirects to www.python.org, which is then crawled
 make check                                  # lint, type-check and test
 ```
 
@@ -162,7 +163,7 @@ flowchart TD
     queue --> fetch["Worker fetches the URL<br/>(N workers in parallel)"]
     fetch --> response{"Response?"}
 
-    response -- "HTML page" --> parse["extract_links()<br/>every &lt;a href&gt; on the page"]
+    response -- "HTML page" --> parse["extract_links()<br/>every link on the page"]
     response -- "Redirect" --> location["Location header"]
     response -- "Error" --> report
     response -- "Not HTML" --> skip(["Skip"])
@@ -177,35 +178,35 @@ The crawl finishes when the queue is empty and no worker is busy.
 
 ### Decisions
 
-**asyncio with a fixed worker pool.** Crawling is mostly waiting on the network, so one event loop can keep
+- **asyncio with a fixed worker pool.** Crawling is mostly waiting on the network, so one event loop can keep
 many requests in flight. A fixed number of workers caps concurrency and memory however big the site is.
 Threads cost more per connection and processes add complexity without helping I/O-bound work.
 
-**One shared HTTP client.** All requests go to one host, so reusing connections avoids repeated TCP and TLS
+- **One shared HTTP client.** All requests go to one host, so reusing connections avoids repeated TCP and TLS
 handshakes. I chose `httpx` over `aiohttp` for its typed API and easy mocking with `respx`.
 
-**Parsing in a thread.** `lxml` parses HTML outside the GIL, so `asyncio.to_thread` keeps the event loop
+- **Parsing in a thread.** `lxml` parses HTML outside the GIL, so `asyncio.to_thread` keeps the event loop
 free for other requests. Link normalisation afterwards is plain Python and still holds the GIL. I chose `lxml` over
 BeautifulSoup for speed. BeautifulSoup would mostly have wrapped the same parser.
 
-**Python 3.14.** I chose the newest release as it's still getting bug fixes; 3.12 and 3.13 are security-fix only or about to
+- **Python 3.14.** I chose the newest release as it's still getting bug fixes; 3.12 and 3.13 are security-fix only or about to
 be. The no-GIL build would only speed up link normalisation, which isn't the bottleneck for this.
 
-**De-duplicate when queuing.** URLs are marked as seen when queued, not when fetched, so two workers can't
+- **De-duplicate when queuing.** URLs are marked as seen when queued, not when fetched, so two workers can't
 fetch the same page. Everything runs on one thread, so no locks are needed.
 
-**URL normalisation.** URLs are put in a standard form before comparing, so `/a`, `/a#top` and
+- **URL normalisation.** URLs are put in a standard form before comparing, so `/a`, `/a#top` and
 `HTTPS://Site.com:443/a` count as one page. Query strings are kept as they often mean different content.
 
-**Redirects aren't followed automatically.** The target is reported as the page's only link and goes
+- **Redirects aren't followed automatically.** The target is reported as the page's only link and goes
 through the same checks as any other, so a redirect can't lead to another domain.
 
-**Only HTML is downloaded.** `Content-Type` is checked before reading the body, and HTML is capped at 10 MB.
+- **Only HTML is downloaded.** `Content-Type` is checked before reading the body, and HTML is capped at 10 MB.
 
-**Retries.** Connection errors, timeouts, 429 and 5xx are retried with backoff and jitter, respecting
+- **Retries.** Connection errors, timeouts, 429 and 5xx are retried with backoff and jitter, respecting
 `Retry-After`. One failing page never stops the crawl.
 
-**Interfaces between components.** `Crawler` depends on interfaces for fetching, URL rules and output, so
+- **Interfaces between components.** `Crawler` depends on interfaces for fetching, URL rules and output, so
 it's easy to test with fakes and to extend.
 
 ### Assumptions
