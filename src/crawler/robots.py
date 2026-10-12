@@ -17,15 +17,18 @@ class RobotsPolicy:
     """Answers "may we fetch this URL?" according to the site's robots.txt.
 
     A missing or unreachable robots.txt means everything is allowed, which is the
-    conventional interpretation.
+    conventional interpretation. ``load`` can be called again if the crawl moves
+    to a different host.
     """
 
-    def __init__(self, user_agent: str):
+    def __init__(self, user_agent: str, getter: TextGetter):
         self._user_agent = user_agent
+        self._getter = getter
         self._parser: RobotFileParser | None = None
 
-    async def load(self, origin: str, getter: TextGetter) -> None:
-        text = await getter.get_text(f"{origin}/robots.txt")
+    async def load(self, origin: str) -> None:
+        self._parser = None
+        text = await self._getter.get_text(f"{origin}/robots.txt")
         if text is None:
             logger.info("No robots.txt found at %s; all URLs allowed", origin)
             return
@@ -39,6 +42,9 @@ class RobotsPolicy:
 
 class AllowAll:
     """Policy used when robots.txt is explicitly ignored."""
+
+    async def load(self, origin: str) -> None:
+        pass
 
     def allows(self, url: str) -> bool:
         return True

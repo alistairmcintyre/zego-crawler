@@ -88,6 +88,31 @@ def test_end_to_end_with_mocked_http() -> None:
 
 
 @respx.mock
+def test_start_url_redirect_to_www_uses_the_new_hosts_robots() -> None:
+    respx.get("https://example.com/robots.txt").respond(404)
+    respx.get("https://example.com/").respond(301, headers={"Location": "https://www.example.com/"})
+    respx.get("https://www.example.com/robots.txt").respond(
+        200, text="User-agent: *\nDisallow: /private\n"
+    )
+    respx.get("https://www.example.com/").respond(
+        200, html='<a href="/a">a</a><a href="/private">p</a>'
+    )
+    respx.get("https://www.example.com/a").respond(200, html="<p>leaf</p>")
+    out = io.StringIO()
+
+    assert main(["https://example.com"], out=out) == EXIT_OK
+
+    assert out.getvalue().splitlines() == [
+        "https://example.com/",
+        "  => https://www.example.com/",
+        "https://www.example.com/",
+        "  - https://www.example.com/a",
+        "  - https://www.example.com/private",
+        "https://www.example.com/a",
+    ]
+
+
+@respx.mock
 def test_ignore_robots_skips_robots_fetch() -> None:
     robots = respx.get("https://example.com/robots.txt").respond(
         200, text="User-agent: *\nDisallow: /"

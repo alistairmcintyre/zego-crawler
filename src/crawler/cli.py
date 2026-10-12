@@ -14,7 +14,7 @@ from crawler.crawler import Crawler, CrawlerConfig, CrawlStats
 from crawler.fetcher import DEFAULT_USER_AGENT, Fetcher, FetcherConfig
 from crawler.reporters import JsonLinesReporter, TextReporter
 from crawler.robots import AllowAll, RobotsPolicy
-from crawler.urls import normalise_url, origin_of
+from crawler.urls import normalise_url
 
 logger = logging.getLogger("crawler")
 
@@ -123,10 +123,9 @@ async def crawl(args: argparse.Namespace, out: TextIO) -> CrawlStats:
         user_agent=args.user_agent,
     )
     async with Fetcher(fetcher_config) as fetcher:
-        policy: RobotsPolicy | AllowAll = AllowAll()
-        if not args.ignore_robots:
-            policy = RobotsPolicy(args.user_agent)
-            await policy.load(origin_of(args.url), fetcher)
+        policy: RobotsPolicy | AllowAll = (
+            AllowAll() if args.ignore_robots else RobotsPolicy(args.user_agent, fetcher)
+        )
         crawler = Crawler(
             args.url,
             fetcher=fetcher,

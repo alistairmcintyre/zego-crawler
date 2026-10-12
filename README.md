@@ -178,17 +178,17 @@ The crawl finishes when the queue is empty and no worker is busy.
 
 **asyncio with a fixed worker pool.** Crawling is mostly waiting on the network, so one event loop can keep
 many requests in flight. A fixed number of workers caps concurrency and memory however big the site is.
-Threads cost more per connection; processes add complexity without helping I/O-bound work.
+Threads cost more per connection and processes add complexity without helping I/O-bound work.
 
 **One shared HTTP client.** All requests go to one host, so reusing connections avoids repeated TCP and TLS
-handshakes. `httpx` over `aiohttp` for its typed API and easy mocking with `respx`.
+handshakes. I chose `httpx` over `aiohttp` for its typed API and easy mocking with `respx`.
 
 **Parsing in a thread.** `lxml` parses HTML outside the GIL, so `asyncio.to_thread` keeps the event loop
-free for other requests. Link normalisation afterwards is plain Python and still holds the GIL. `lxml` over
-BeautifulSoup for speed; BeautifulSoup would mostly have wrapped the same parser.
+free for other requests. Link normalisation afterwards is plain Python and still holds the GIL. I chose `lxml` over
+BeautifulSoup for speed. BeautifulSoup would mostly have wrapped the same parser.
 
-**Python 3.14.** The newest release still getting bug fixes; 3.12 and 3.13 are security-fix only or about to
-be. The no-GIL build would only speed up link normalisation, which isn't the bottleneck.
+**Python 3.14.** I chose the newest release as it's still getting bug fixes; 3.12 and 3.13 are security-fix only or about to
+be. The no-GIL build would only speed up link normalisation, which isn't the bottleneck for this.
 
 **De-duplicate when queuing.** URLs are marked as seen when queued, not when fetched, so two workers can't
 fetch the same page. Everything runs on one thread, so no locks are needed.
@@ -210,7 +210,9 @@ it's easy to test with fakes and to extend.
 ### Assumptions
 
 - "Same domain" means the exact host and port of the start URL. `www.` and other subdomains count as
-  different sites; `http` and `https` on the same host count as the same one.
+  different sites. `http` and `https` on the same host count as the same one.
+- If the start URL redirects to another host (for example `example.com` to `www.example.com`), the crawl
+  moves to that host and uses its `robots.txt`. Redirects found later in the crawl don't change the host.
 - "URLs found on the page" means every `<a href>`, including external links, but not `mailto:` and similar.
   Only same-host links are crawled. Each page's links are listed once, in page order.
 - `robots.txt` is respected unless `--ignore-robots` is passed.
@@ -254,8 +256,8 @@ currently 99%.
 This version crawls one domain per run. The simplest next step is one `Crawler` per domain in the same
 process with a global connection limit, which works today for a few dozen domains.
 
-Beyond that, a CLI isn't a good fit: crawls need to survive crashes, scale across machines, run on a
-schedule and report progress. A possible design:
+Beyond that, a CLI isn't a good fit. A crawls need to survive crashes, scale across machines, run on a
+schedule and report progress. A possible design is:
 
 - **Jobs**: an API (FastAPI) or orchestrator (Airflow, Dagster) creates crawl jobs, tracked in Postgres.
 - **Frontier**: a durable queue partitioned by domain (Kafka, SQS FIFO or Redis Streams), so each domain's
@@ -268,8 +270,6 @@ schedule and report progress. A possible design:
 
 ## Future work
 
-- If the start URL redirects to another host (for example `example.com` to `www.example.com`), use the new
-  host for the crawl. Today the crawl stops after reporting the redirect.
 - Per-host rate limiting and `Crawl-delay`.
 - Detect duplicate pages by content hash, and support `<link rel="canonical">`.
 - Protection against crawler traps: maximum depth, per-path limits, removing tracking parameters.
@@ -281,8 +281,11 @@ schedule and report progress. A possible design:
 ## Tools
 
 - **IDE**: VS Code.
-- **AI**: Claude Code, used throughout to scaffold the project, write code, tests and documentation, and
-  explain parts of the code. I reviewed its changes and asked for corrections where I disagreed.
+- **AI**: I used Claude Code as a pair programmer for implementation and tests. I set the scope and
+  requirements, reviewed each design choice and challenged several. Examples: whether lxml's GIL release
+  justified threaded parsing, how `www.` subdomains and redirects should be scoped, input validation in the
+  CLI, moving to Python 3.14 once 3.12 was security-fix only, and pinning Docker images with grouped
+  Dependabot updates. I used it to explain parts of the code until I could defend every decision.
 - **Tooling**: `uv`, `ruff`, `mypy`, `pytest` (with `pytest-asyncio`, `respx`, `pytest-cov`), `pre-commit`,
   Docker and GitHub Actions.
 - **Checking the results**: the test suite, plus manual crawls of `books.toscrape.com` at different

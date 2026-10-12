@@ -10,7 +10,7 @@ from typing import Protocol
 
 from crawler.fetcher import FetchResult
 from crawler.parser import extract_links
-from crawler.urls import host_of, is_same_host, normalise_url
+from crawler.urls import host_of, is_same_host, normalise_url, origin_of
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,8 @@ class PageFetcher(Protocol):
 
 
 class UrlPolicy(Protocol):
+    async def load(self, origin: str) -> None: ...
+
     def allows(self, url: str) -> bool: ...
 
 
@@ -73,6 +75,10 @@ class Crawler:
 
     Results are pushed to ``on_page`` as soon as each page completes, so output
     streams rather than being buffered until the end of the crawl.
+
+    If the start URL redirects to another host (e.g. ``example.com`` to
+    ``www.example.com``), the crawl moves to that host. Redirects found later in
+    the crawl are held to the normal same-host rule.
     """
 
     def __init__(
@@ -88,6 +94,8 @@ class Crawler:
             raise ValueError(f"Not a valid http(s) URL: {start_url!r}")
         self.start_url = normalised
         self.host = host_of(normalised)
+        # The URL at the end of the start URL's redirect chain so far.
+        self._entry_url = normalised
         self._fetcher = fetcher
         self._on_page = on_page
         self._config = config or CrawlerConfig()
@@ -96,6 +104,7 @@ class Crawler:
         self.stats = CrawlStats()
 
     async def run(self) -> CrawlStats:
+        await self._load_policy()
         self._schedule(self.start_url)
         workers = [
             asyncio.create_task(self._worker(), name=f"crawler-worker-{i}")
@@ -157,6 +166,8 @@ class Crawler:
                 )
             )
             if target:
+                if url == self._entry_url:
+                    await self._follow_entry_redirect(target)
                 self._schedule(target)
             return
 
@@ -171,6 +182,23 @@ class Crawler:
         self._report(PageResult(url=url, links=tuple(links), status=result.status))
         for link in links:
             self._schedule(link)
+
+    async def _follow_entry_redirect(self, target: str) -> None:
+        """Move the crawl to the host the start URL redirects to.
+
+        No locking is needed: while the start URL's redirect chain is being
+        followed, it is the only URL in flight.
+        """
+        self._entry_url = target
+        new_host = host_of(target)
+        if new_host != self.host:
+            logger.info("Start URL redirects to %s; crawling that host instead", new_host)
+            self.host = new_host
+            await self._load_policy()
+
+    async def _load_policy(self) -> None:
+        if self._policy is not None:
+            await self._policy.load(origin_of(self._entry_url))
 
     def _report(self, page: PageResult) -> None:
         self.stats.pages_reported += 1

@@ -8,8 +8,14 @@ ROOT = "https://example.com/"
 
 
 class DenyPrefix:
-    def __init__(self, prefix: str):
+    """Test policy: blocks URLs starting with ``prefix`` and records each origin loaded."""
+
+    def __init__(self, prefix: str = "never-matches"):
         self.prefix = prefix
+        self.loaded: list[str] = []
+
+    async def load(self, origin: str) -> None:
+        self.loaded.append(origin)
 
     def allows(self, url: str) -> bool:
         return not url.startswith(self.prefix)
@@ -221,3 +227,70 @@ async def test_unexpected_exception_does_not_kill_workers() -> None:
 
     assert "https://example.com/fine" in by_url(results)
     assert stats.errors == 1
+
+
+async def test_start_url_redirect_to_another_host_moves_the_crawl() -> None:
+    fetcher = FakeFetcher()
+    fetcher.add(FetchResult(url=ROOT, status=301, redirect_to="https://www.example.com/"))
+    fetcher.add_html("https://www.example.com/", "/about", "https://example.com/other")
+    fetcher.add_html("https://www.example.com/about")
+    policy = DenyPrefix()
+    crawler, results = make_crawler(fetcher, policy=policy)
+
+    await crawler.run()
+
+    assert crawler.host == "www.example.com"
+    assert [r.url for r in results] == [
+        ROOT,
+        "https://www.example.com/",
+        "https://www.example.com/about",
+    ]
+    assert "https://example.com/other" not in fetcher.fetched  # old host is now off-site
+    assert policy.loaded == ["https://example.com", "https://www.example.com"]
+
+
+async def test_start_url_redirect_chain_is_followed_to_the_end() -> None:
+    fetcher = FakeFetcher()
+    fetcher.add(
+        FetchResult(url="http://example.com/", status=301, redirect_to="https://example.com/")
+    )
+    fetcher.add(FetchResult(url=ROOT, status=301, redirect_to="https://www.example.com/"))
+    fetcher.add_html("https://www.example.com/")
+    policy = DenyPrefix()
+    crawler, _ = make_crawler(fetcher, start="http://example.com", policy=policy)
+
+    await crawler.run()
+
+    assert crawler.host == "www.example.com"
+    assert fetcher.fetched[-1] == "https://www.example.com/"
+    # http -> https on the same host doesn't reload robots.txt; the host change does.
+    assert policy.loaded == ["http://example.com", "https://www.example.com"]
+
+
+async def test_start_url_redirect_policy_still_applies_on_the_new_host() -> None:
+    fetcher = FakeFetcher()
+    fetcher.add(FetchResult(url=ROOT, status=301, redirect_to="https://www.example.com/"))
+    fetcher.add_html("https://www.example.com/", "/private/x", "/public")
+    fetcher.add_html("https://www.example.com/public")
+    crawler, _ = make_crawler(fetcher, policy=DenyPrefix("https://www.example.com/private"))
+
+    stats = await crawler.run()
+
+    assert "https://www.example.com/public" in fetcher.fetched
+    assert stats.disallowed_by_robots == 1
+
+
+async def test_later_redirects_to_another_host_do_not_move_the_crawl() -> None:
+    fetcher = FakeFetcher()
+    fetcher.add_html(ROOT, "/go")
+    fetcher.add(
+        FetchResult(
+            url="https://example.com/go", status=302, redirect_to="https://www.example.com/"
+        )
+    )
+    crawler, _ = make_crawler(fetcher)
+
+    await crawler.run()
+
+    assert crawler.host == "example.com"
+    assert "https://www.example.com/" not in fetcher.fetched

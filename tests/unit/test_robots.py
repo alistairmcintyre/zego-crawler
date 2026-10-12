@@ -13,8 +13,8 @@ class StubGetter:
 
 async def test_disallowed_paths_are_blocked() -> None:
     getter = StubGetter("User-agent: *\nDisallow: /private/\n")
-    policy = RobotsPolicy("my-bot")
-    await policy.load("https://example.com", getter)
+    policy = RobotsPolicy("my-bot", getter)
+    await policy.load("https://example.com")
 
     assert getter.requested == ["https://example.com/robots.txt"]
     assert policy.allows("https://example.com/public")
@@ -23,16 +23,31 @@ async def test_disallowed_paths_are_blocked() -> None:
 
 async def test_agent_specific_rules_apply() -> None:
     getter = StubGetter("User-agent: my-bot\nDisallow: /\n\nUser-agent: *\nDisallow:\n")
-    policy = RobotsPolicy("my-bot")
-    await policy.load("https://example.com", getter)
+    policy = RobotsPolicy("my-bot", getter)
+    await policy.load("https://example.com")
     assert not policy.allows("https://example.com/anything")
 
 
 async def test_missing_robots_allows_everything() -> None:
-    policy = RobotsPolicy("my-bot")
-    await policy.load("https://example.com", StubGetter(None))
+    policy = RobotsPolicy("my-bot", StubGetter(None))
+    await policy.load("https://example.com")
     assert policy.allows("https://example.com/private/x")
 
 
-def test_allow_all() -> None:
-    assert AllowAll().allows("https://example.com/anything")
+async def test_reloading_for_a_new_host_replaces_the_old_rules() -> None:
+    getter = StubGetter("User-agent: *\nDisallow: /\n")
+    policy = RobotsPolicy("my-bot", getter)
+    await policy.load("https://example.com")
+    assert not policy.allows("https://example.com/x")
+
+    getter.text = None  # the new host has no robots.txt
+    await policy.load("https://www.example.com")
+
+    assert getter.requested[-1] == "https://www.example.com/robots.txt"
+    assert policy.allows("https://www.example.com/x")
+
+
+async def test_allow_all() -> None:
+    policy = AllowAll()
+    await policy.load("https://example.com")
+    assert policy.allows("https://example.com/anything")
