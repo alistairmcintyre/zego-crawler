@@ -135,6 +135,31 @@ async def test_max_pages_caps_the_crawl() -> None:
     assert stats.limit_reached
 
 
+async def test_max_pages_does_not_count_urls_blocked_by_robots() -> None:
+    fetcher = FakeFetcher()
+    fetcher.add_html(ROOT, "/private/1", "/private/2", "/a", "/b")
+    policy = DenyPrefix("https://example.com/private")
+    crawler, _ = make_crawler(fetcher, config=CrawlerConfig(max_pages=3), policy=policy)
+
+    await crawler.run()
+
+    assert fetcher.fetched == [ROOT, "https://example.com/a", "https://example.com/b"]
+
+
+async def test_http_links_are_crawled_with_the_start_urls_scheme() -> None:
+    fetcher = FakeFetcher()
+    fetcher.add_html(ROOT, "/a", "http://example.com/a", "http://example.com/b")
+    fetcher.add_html("https://example.com/a")
+    fetcher.add_html("https://example.com/b")
+    crawler, results = make_crawler(fetcher)
+
+    await crawler.run()
+
+    assert sorted(fetcher.fetched) == [ROOT, "https://example.com/a", "https://example.com/b"]
+    # The page's links are still reported exactly as written.
+    assert "http://example.com/b" in by_url(results)[ROOT].links
+
+
 async def test_errors_are_reported_and_do_not_stop_the_crawl() -> None:
     fetcher = FakeFetcher()
     fetcher.add_html(ROOT, "/missing", "/ok")

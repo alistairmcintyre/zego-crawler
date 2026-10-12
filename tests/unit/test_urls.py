@@ -1,6 +1,6 @@
 import pytest
 
-from crawler.urls import host_of, is_same_host, normalise_url, origin_of
+from crawler.urls import host_of, is_same_host, normalise_url, origin_of, with_scheme
 
 
 @pytest.mark.parametrize(
@@ -73,3 +73,7 @@ def test_origin_of() -> None:
 def test_origin_of_rejects_invalid() -> None:
     with pytest.raises(ValueError, match="Not a valid"):
         origin_of("mailto:x@example.com")
+
+
+def test_with_scheme() -> None:
+    assert with_scheme("http://example.com/a?q=1", "https") == "https://example.com/a?q=1"

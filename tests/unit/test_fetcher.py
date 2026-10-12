@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from crawler.fetcher import Fetcher, FetcherConfig, _retry_after
+from crawler.fetcher import Fetcher, FetcherConfig, TextResult, _retry_after
 
 URL = "https://example.com/page"
 
@@ -142,9 +142,11 @@ async def test_get_text(fetcher: Fetcher) -> None:
     respx.get("https://example.com/robots.txt").respond(200, text="User-agent: *\nDisallow:")
     respx.get("https://example.com/missing.txt").respond(404)
     respx.get("https://example.com/broken.txt").mock(side_effect=httpx.ConnectError("boom"))
-    assert await fetcher.get_text("https://example.com/robots.txt") == "User-agent: *\nDisallow:"
-    assert await fetcher.get_text("https://example.com/missing.txt") is None
-    assert await fetcher.get_text("https://example.com/broken.txt") is None
+    assert await fetcher.get_text("https://example.com/robots.txt") == TextResult(
+        status=200, text="User-agent: *\nDisallow:"
+    )
+    assert (await fetcher.get_text("https://example.com/missing.txt")).status == 404
+    assert await fetcher.get_text("https://example.com/broken.txt") == TextResult(status=None)
 
 
 @pytest.mark.parametrize(

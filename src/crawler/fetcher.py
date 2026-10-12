@@ -38,6 +38,14 @@ class FetchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TextResult:
+    """A small text resource such as robots.txt; ``status`` is None if the request failed."""
+
+    status: int | None
+    text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class FetcherConfig:
     timeout: float = 10.0
     max_retries: int = 2
@@ -85,14 +93,14 @@ class Fetcher:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def get_text(self, url: str) -> str | None:
-        """Fetch a small text resource (e.g. robots.txt); ``None`` unless a 2xx is returned."""
+    async def get_text(self, url: str) -> TextResult:
+        """Fetch a small text resource (e.g. robots.txt), following redirects."""
         try:
             response = await self._client.get(url, follow_redirects=True)
         except httpx.HTTPError as exc:
             logger.debug("GET %s failed: %s", url, exc)
-            return None
-        return response.text if response.is_success else None
+            return TextResult(status=None)
+        return TextResult(status=response.status_code, text=response.text)
 
     async def fetch(self, url: str) -> FetchResult:
         """Fetch ``url``, retrying transient failures with exponential backoff."""

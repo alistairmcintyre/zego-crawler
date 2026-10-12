@@ -69,3 +69,8 @@ def origin_of(url: str) -> str:
         raise ValueError(f"Not a valid http(s) URL: {url!r}")
     parts = urlsplit(normalised)
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def with_scheme(url: str, scheme: str) -> str:
+    """Return ``url`` with its scheme replaced, e.g. to crawl ``http`` links over ``https``."""
+    return urlunsplit(urlsplit(url)._replace(scheme=scheme))

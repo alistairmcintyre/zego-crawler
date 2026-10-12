@@ -7,10 +7,11 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from crawler.fetcher import FetchResult
 from crawler.parser import extract_links
-from crawler.urls import host_of, is_same_host, normalise_url, origin_of
+from crawler.urls import host_of, is_same_host, normalise_url, origin_of, with_scheme
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,9 @@ class Crawler:
     If the start URL redirects to another host (e.g. ``example.com`` to
     ``www.example.com``), the crawl moves to that host. Redirects found later in
     the crawl are held to the normal same-host rule.
+
+    ``http`` and ``https`` links to the host are treated as the same page: links
+    are crawled using the start URL's scheme, so a page is never fetched twice.
     """
 
     def __init__(
@@ -98,6 +102,7 @@ class Crawler:
             raise ValueError(f"Not a valid http(s) URL: {start_url!r}")
         self.start_url = normalised
         self.host = host_of(normalised)
+        self.scheme = urlsplit(normalised).scheme
         # The URL at the end of the start URL's redirect chain so far, or None
         # once the chain has been abandoned for being too long.
         self._entry_url: str | None = normalised
@@ -107,6 +112,7 @@ class Crawler:
         self._config = config or CrawlerConfig()
         self._policy = policy
         self._frontier = _Frontier()
+        self._queued = 0
         self.stats = CrawlStats()
 
     async def run(self) -> CrawlStats:
@@ -126,10 +132,13 @@ class Crawler:
 
     def _schedule(self, url: str) -> None:
         frontier = self._frontier
-        if url in frontier.seen or not is_same_host(url, self.host):
+        if not is_same_host(url, self.host):
+            return
+        url = with_scheme(url, self.scheme)
+        if url in frontier.seen:
             return
         max_pages = self._config.max_pages
-        if max_pages is not None and len(frontier.seen) >= max_pages:
+        if max_pages is not None and self._queued >= max_pages:
             self.stats.limit_reached = True
             return
         if self._policy is not None and not self._policy.allows(url):
@@ -139,6 +148,7 @@ class Crawler:
             return
         frontier.seen.add(url)
         frontier.queue.put_nowait(url)
+        self._queued += 1
 
     async def _worker(self) -> None:
         queue = self._frontier.queue
@@ -205,6 +215,7 @@ class Crawler:
             self.stats.errors += 1
             return False
         self._entry_url = target
+        self.scheme = urlsplit(target).scheme
         new_host = host_of(target)
         if new_host != self.host:
             logger.info("Start URL redirects to %s; crawling that host instead", new_host)
