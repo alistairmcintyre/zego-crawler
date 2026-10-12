@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Dev tooling changes rarely affect the shipped crawler, so batch it into one PR.
+      # Major versions are left out of the group so breaking changes get their own PR.
+      dev-tools:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest*"
+          - "respx"
+          - "pre-commit"
+          - "lxml-stubs"
+        update-types:
+          - minor
+          - patch
+      # Runtime dependencies (httpx, lxml) are deliberately ungrouped: each gets its
+      # own PR so a regression can be traced to a single library.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

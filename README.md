@@ -79,3 +79,238 @@ the trade-offs you made during the development process, and aspects you might ha
 4. Add us (@nktori, @danyal-zego, @bogdangoie, @cypherlou, @marliechiller, @ZEGODiogoAlves, and @BarryMcAuley) as collaborators and tag us to review.
 5. Notify your TA so they can chase the reviewers.
 
+---
+
+# Solution
+
+A single-domain web crawler in Python 3.14, built on `asyncio`, `httpx` and `lxml`.
+
+## Usage
+
+Requires [uv](https://docs.astral.sh/uv/).
+
+```bash
+make install                                # install dependencies and git hooks
+uv run crawler https://books.toscrape.com
+uv run crawler https://books.toscrape.com -n 50 -c 20 -f jsonl
+uv run crawler https://python.org -n 20     # redirects to www.python.org, which is then crawled
+make check                                  # lint, type-check and test
+```
+
+Or with Docker:
+
+```bash
+docker build -t zego-crawler .
+docker run --rm zego-crawler https://books.toscrape.com -n 20
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-c, --concurrency` | 10 | Max simultaneous requests |
+| `-n, --max-pages` | no limit | Max pages to crawl |
+| `-t, --timeout` | 10 | Request timeout in seconds |
+| `-r, --retries` | 2 | Retries for connection errors, 429 and 5xx |
+| `-f, --format` | `text` | `text` or `jsonl` |
+| `--ignore-robots` | off | Ignore `robots.txt` |
+| `--user-agent` | `zego-crawler/0.1` | `User-Agent` header, also used for `robots.txt` rules |
+| `-v`, `-vv` | off | Info or debug logging to stderr |
+
+Each crawled page is printed with every link found on it. `=>` marks a redirect and `!` an error:
+
+```
+https://example.com/
+  - https://example.com/about
+  - https://other-site.com/
+https://example.com/old-page
+  => https://example.com/new-page
+https://example.com/broken
+  ! error: HTTP 404
+```
+
+`-f jsonl` prints one JSON object per page instead:
+
+```json
+{"url": "https://example.com/", "status": 200, "links": ["https://example.com/about"], "redirect": false, "error": null}
+```
+
+## Code layout
+
+```
+src/crawler/
+  cli.py        command-line entry point
+  crawler.py    worker pool, URL frontier, scoping rules
+  fetcher.py    HTTP client with retries and content checks
+  parser.py     extracts <a href> links with lxml
+  urls.py       URL normalisation and same-host check
+  robots.py     robots.txt rules
+  reporters.py  text and JSON Lines output
+tests/
+  unit/         isolated tests with mocked HTTP
+  integration/  crawls a real local test site
+```
+
+## Design
+
+The crawl is a breadth-first search of a graph where pages are nodes and links are edges. The URL frontier
+is the queue of pages found but not yet fetched.
+
+```mermaid
+flowchart TD
+    start(["Start URL"]) --> check
+    check{"Should we crawl it?<br/>same host · not seen<br/>page limit · robots.txt"}
+    check -- no --> drop(["Discard"])
+    check -- yes --> queue[("URL frontier<br/>asyncio.Queue")]
+    queue --> fetch["Worker fetches the URL<br/>(N workers in parallel)"]
+    fetch --> response{"Response?"}
+
+    response -- "HTML page" --> parse["extract_links()<br/>every link on the page"]
+    response -- "Redirect" --> location["Location header"]
+    response -- "Error" --> report
+    response -- "Not HTML" --> skip(["Skip"])
+
+    parse --> links["Links found"]
+    location --> links
+    links --> report["Print page + its links"]
+    links == "each link goes back<br/>to the check" ==> check
+```
+
+The crawl finishes when the queue is empty and no worker is busy.
+
+### Decisions
+
+- **asyncio with a fixed worker pool.** Crawling is mostly waiting on the network, so one event loop can keep
+many requests in flight. A fixed number of workers caps concurrency and memory however big the site is.
+Threads cost more per connection and processes add complexity without helping I/O-bound work.
+
+- **One shared HTTP client.** All requests go to one host, so reusing connections avoids repeated TCP and TLS
+handshakes. I chose `httpx` over `aiohttp` for its typed API and easy mocking with `respx`.
+
+- **Parsing in a thread.** `lxml` parses HTML outside the GIL, so `asyncio.to_thread` keeps the event loop
+free for other requests. Link normalisation afterwards is plain Python and still holds the GIL. I chose `lxml` over
+BeautifulSoup for speed. BeautifulSoup would mostly have wrapped the same parser.
+
+- **Python 3.14.** I chose the newest release as it's still getting bug fixes; 3.12 and 3.13 are security-fix only or about to
+be. The no-GIL build would only speed up link normalisation, which isn't the bottleneck for this.
+
+- **De-duplicate when queuing.** URLs are marked as seen when queued, not when fetched, so two workers can't
+fetch the same page. Everything runs on one thread, so no locks are needed.
+
+- **URL normalisation.** URLs are put in a standard form before comparing, so `/a`, `/a#top` and
+`HTTPS://Site.com:443/a` count as one page. Query strings are kept as they often mean different content.
+
+- **Redirects aren't followed automatically.** The target is reported as the page's only link and goes
+through the same checks as any other, so a redirect can't lead to another domain.
+
+- **Only HTML is downloaded.** `Content-Type` is checked before reading the body, and HTML is capped at 10 MB.
+
+- **Retries.** Connection errors, timeouts, 429 and 5xx are retried with backoff and jitter, respecting
+`Retry-After`. One failing page never stops the crawl.
+
+- **Interfaces between components.** `Crawler` depends on interfaces for fetching, URL rules and output, so
+it's easy to test with fakes and to extend.
+
+### Assumptions
+
+- "Same domain" means the exact host and port of the start URL. `www.` and other subdomains count as
+  different sites. `http` and `https` links to the host count as the same page and are crawled using the
+  start URL's scheme, so no page is fetched twice.
+- If the start URL redirects to another host (for example `example.com` to `www.example.com`), the crawl
+  moves to that host and uses its `robots.txt`, giving up after 10 redirects. Redirects found later in the
+  crawl don't change the host.
+- "URLs found on the page" means every `<a href>`, including external links, but not `mailto:` and similar.
+  Only same-host links are crawled. Each page's links are listed once, in page order.
+- `robots.txt` is respected unless `--ignore-robots` is passed. Following RFC 9309, a missing file (4xx)
+  allows everything, while a server error or failed request blocks everything.
+- Only HTML pages are printed. Other files such as PDFs and images appear as links on the page that found
+  them but aren't downloaded or printed as pages.
+- `/` and `/index.html` are different URLs, so both are crawled even if they return the same page.
+
+### Performance
+
+First 100 pages of `books.toscrape.com`, a site built for scraping practice:
+
+| Concurrency | Time | Peak memory |
+| --- | --- | --- |
+| 1 | 24.3 s | 38 MB |
+| 10 | 3.3 s | 43 MB |
+
+About 7× faster for 5 MB more memory. Above 10 to 20 concurrent requests, the target server becomes the
+limit.
+
+## Testing
+
+`make check` runs `ruff`, `mypy --strict` and the tests with branch coverage. CI requires 90%; it's
+currently 99%.
+
+- Unit tests cover URL handling and parsing with tables of edge cases, and the fetcher against mocked HTTP.
+  The crawler runs against a fake fetcher to check each URL is fetched once, concurrency stays within the
+  limit, and a failing page doesn't stop the crawl.
+- Integration tests crawl a real local web server. The test site has a `robots.txt`-blocked section, a PDF,
+  a broken link, external links and a redirect.
+
+## Production setup
+
+- **CI** (GitHub Actions) runs linting, type checks, tests and a Docker build, and fails if `uv.lock` is out
+  of date.
+- **Dependabot** updates Python packages, GitHub Actions and Docker images weekly. Dev tools are grouped into
+  one PR; runtime dependencies get one PR each.
+- **pre-commit** runs the same checks before each commit.
+- **Docker** uses a multi-stage build and a non-root user. Base images are pinned to an exact version and
+  digest so builds are reproducible. GitHub Actions are pinned to commit SHAs for the same reason.
+
+Next steps:
+
+- **Releases**: build and push the Docker image to a registry on each version tag, with a changelog.
+- **Security scanning**: `pip-audit` for dependencies, Trivy for the image and CodeQL for the code.
+- **Branch protection**: require reviews and passing CI before merging to `main`.
+- **Observability**: structured JSON logs and metrics such as pages per second and error rate.
+- **Team files**: `CODEOWNERS` and a PR template.
+
+## Crawling many domains
+
+This version crawls one domain per run. The simplest next step is one `Crawler` per domain in the same
+process with a global connection limit, which works today for a few dozen domains.
+
+Beyond that, a CLI isn't a good fit. Crawls need to survive crashes, scale across machines, run on a
+schedule and report progress. A possible design is:
+
+- **Jobs**: an API (FastAPI) or orchestrator (Airflow, Dagster) creates crawl jobs, tracked in Postgres.
+- **Frontier**: a durable queue partitioned by domain (Kafka, SQS FIFO or Redis Streams), so each domain's
+  rate limit has one owner.
+- **Seen set**: shared in Redis, or a Bloom filter for very large crawls.
+- **Workers**: stateless containers running the existing crawler code, scaled on queue depth.
+- **Results**: JSON Lines records to Kafka or Parquet on S3, then the warehouse, where the link graph can be
+  queried.
+- **Monitoring**: pages per second, errors and queue depth per domain.
+
+### From crawler to data pipeline
+
+If the goal is collecting data over time rather than mapping links once, the priority shifts to the data
+itself. Raw fetches would be stored unchanged with a timestamp, so any past state of a page can be
+reproduced and extraction can be re-run when parsers change. Site-specific parsers would turn pages into
+structured records, with quality checks to catch sites changing their layout, and each record would be
+traceable to its raw fetch and parser version. Pages that build their content with JavaScript would go to
+a separate pool of headless-browser workers, used only where needed because they're much slower and more
+expensive than plain HTTP requests.
+
+## Future work
+
+- Per-host rate limiting and `Crawl-delay`.
+- Detect duplicate pages by content hash, and support `<link rel="canonical">`.
+- Protection against crawler traps: maximum depth, per-path limits, removing tracking parameters.
+- Use `sitemap.xml` to find pages.
+- HTTP/2, to send many requests over one connection.
+- Resume interrupted crawls.
+
+## Tools
+
+- **IDE**: VS Code.
+- **AI**: I used Claude Code as a pair programmer for implementation and tests. I set the scope and
+  requirements, and reviewed and changed its design choices, for example how `www.` subdomains and
+  redirects are scoped, whether threaded parsing was worth it, and the move to Python 3.14.
+- **Learning the subject**: the `httpx`, `lxml` and `asyncio` docs, the `robots.txt` standard (RFC 9309), and
+  Claude Code to explain crawler concepts such as the URL frontier and URL normalisation.
+- **Tooling**: `uv`, `ruff`, `mypy`, `pytest` (with `pytest-asyncio`, `respx`, `pytest-cov`), `pre-commit`,
+  Docker and GitHub Actions.
+- **Checking the results**: the test suite, plus manual crawls of `books.toscrape.com` at different
+  concurrency levels.
