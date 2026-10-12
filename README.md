@@ -258,6 +258,14 @@ currently 99%.
 - **Docker** uses a multi-stage build and a non-root user. Base images are pinned to an exact version and
   digest so builds are reproducible. GitHub Actions are pinned to commit SHAs for the same reason.
 
+Next steps:
+
+- **Releases**: build and push the Docker image to a registry on each version tag, with a changelog.
+- **Security scanning**: `pip-audit` for dependencies, Trivy for the image and CodeQL for the code.
+- **Branch protection**: require reviews and passing CI before merging to `main`.
+- **Observability**: structured JSON logs and metrics such as pages per second and error rate.
+- **Team files**: `CODEOWNERS` and a PR template.
+
 ## Crawling many domains
 
 This version crawls one domain per run. The simplest next step is one `Crawler` per domain in the same
