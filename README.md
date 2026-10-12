@@ -111,6 +111,7 @@ docker run --rm zego-crawler https://books.toscrape.com -n 20
 | `-r, --retries` | 2 | Retries for connection errors, 429 and 5xx |
 | `-f, --format` | `text` | `text` or `jsonl` |
 | `--ignore-robots` | off | Ignore `robots.txt` |
+| `--user-agent` | `zego-crawler/0.1` | `User-Agent` header, also used for `robots.txt` rules |
 | `-v`, `-vv` | off | Info or debug logging to stderr |
 
 Each crawled page is printed with every link found on it. `=>` marks a redirect and `!` an error:
@@ -210,13 +211,17 @@ it's easy to test with fakes and to extend.
 ### Assumptions
 
 - "Same domain" means the exact host and port of the start URL. `www.` and other subdomains count as
-  different sites. `http` and `https` on the same host count as the same one.
+  different sites. `http` and `https` links to the host count as the same page and are crawled using the
+  start URL's scheme, so no page is fetched twice.
 - If the start URL redirects to another host (for example `example.com` to `www.example.com`), the crawl
   moves to that host and uses its `robots.txt`, giving up after 10 redirects. Redirects found later in the
   crawl don't change the host.
 - "URLs found on the page" means every `<a href>`, including external links, but not `mailto:` and similar.
   Only same-host links are crawled. Each page's links are listed once, in page order.
-- `robots.txt` is respected unless `--ignore-robots` is passed.
+- `robots.txt` is respected unless `--ignore-robots` is passed. Following RFC 9309, a missing file (4xx)
+  allows everything, while a server error or failed request blocks everything.
+- Only HTML pages are printed. Other files such as PDFs and images appear as links on the page that found
+  them but aren't downloaded or printed as pages.
 - `/` and `/index.html` are different URLs, so both are crawled even if they return the same page.
 
 ### Performance
@@ -250,7 +255,7 @@ currently 99%.
   one PR; runtime dependencies get one PR each.
 - **pre-commit** runs the same checks before each commit.
 - **Docker** uses a multi-stage build and a non-root user. Base images are pinned to an exact version and
-  digest so builds are reproducible.
+  digest so builds are reproducible. GitHub Actions are pinned to commit SHAs for the same reason.
 
 ## Crawling many domains
 
@@ -292,10 +297,10 @@ expensive than plain HTTP requests.
 
 - **IDE**: VS Code.
 - **AI**: I used Claude Code as a pair programmer for implementation and tests. I set the scope and
-  requirements, reviewed each design choice and challenged several. Examples: whether lxml's GIL release
-  justified threaded parsing, how `www.` subdomains and redirects should be scoped, input validation in the
-  CLI, moving to Python 3.14 once 3.12 was security-fix only, and pinning Docker images with grouped
-  Dependabot updates. I used it to explain parts of the code until I could defend every decision.
+  requirements, and reviewed and changed its design choices, for example how `www.` subdomains and
+  redirects are scoped, whether threaded parsing was worth it, and the move to Python 3.14.
+- **Learning the subject**: the `httpx`, `lxml` and `asyncio` docs, the `robots.txt` standard (RFC 9309), and
+  Claude Code to explain crawler concepts such as the URL frontier and URL normalisation.
 - **Tooling**: `uv`, `ruff`, `mypy`, `pytest` (with `pytest-asyncio`, `respx`, `pytest-cov`), `pre-commit`,
   Docker and GitHub Actions.
 - **Checking the results**: the test suite, plus manual crawls of `books.toscrape.com` at different
