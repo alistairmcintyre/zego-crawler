@@ -212,7 +212,8 @@ it's easy to test with fakes and to extend.
 - "Same domain" means the exact host and port of the start URL. `www.` and other subdomains count as
   different sites. `http` and `https` on the same host count as the same one.
 - If the start URL redirects to another host (for example `example.com` to `www.example.com`), the crawl
-  moves to that host and uses its `robots.txt`. Redirects found later in the crawl don't change the host.
+  moves to that host and uses its `robots.txt`, giving up after 10 redirects. Redirects found later in the
+  crawl don't change the host.
 - "URLs found on the page" means every `<a href>`, including external links, but not `mailto:` and similar.
   Only same-host links are crawled. Each page's links are listed once, in page order.
 - `robots.txt` is respected unless `--ignore-robots` is passed.
@@ -256,7 +257,7 @@ currently 99%.
 This version crawls one domain per run. The simplest next step is one `Crawler` per domain in the same
 process with a global connection limit, which works today for a few dozen domains.
 
-Beyond that, a CLI isn't a good fit. A crawls need to survive crashes, scale across machines, run on a
+Beyond that, a CLI isn't a good fit. Crawls need to survive crashes, scale across machines, run on a
 schedule and report progress. A possible design is:
 
 - **Jobs**: an API (FastAPI) or orchestrator (Airflow, Dagster) creates crawl jobs, tracked in Postgres.

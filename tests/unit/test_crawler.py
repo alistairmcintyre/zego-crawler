@@ -1,6 +1,6 @@
 import pytest
 
-from crawler.crawler import Crawler, CrawlerConfig, PageResult
+from crawler.crawler import MAX_START_REDIRECTS, Crawler, CrawlerConfig, PageResult
 from crawler.fetcher import FetchResult
 from tests.fakes import FakeFetcher
 
@@ -294,3 +294,31 @@ async def test_later_redirects_to_another_host_do_not_move_the_crawl() -> None:
 
     assert crawler.host == "example.com"
     assert "https://www.example.com/" not in fetcher.fetched
+
+
+async def test_endless_start_url_redirect_chain_is_abandoned() -> None:
+    # Every hop is a new URL on a new host, so the seen set alone can't stop it.
+    fetcher = FakeFetcher()
+    for i in range(MAX_START_REDIRECTS + 5):
+        url = ROOT if i == 0 else f"https://host{i}.example.com/"
+        fetcher.add(
+            FetchResult(url=url, status=301, redirect_to=f"https://host{i + 1}.example.com/")
+        )
+    crawler, _ = make_crawler(fetcher)
+
+    stats = await crawler.run()
+
+    assert len(fetcher.fetched) == MAX_START_REDIRECTS + 1  # the start URL plus 10 hops
+    assert crawler.host == f"host{MAX_START_REDIRECTS}.example.com"
+    assert stats.errors == 1
+
+
+async def test_start_url_redirect_loop_ends_via_seen_set() -> None:
+    fetcher = FakeFetcher()
+    fetcher.add(FetchResult(url=ROOT, status=301, redirect_to="https://www.example.com/"))
+    fetcher.add(FetchResult(url="https://www.example.com/", status=301, redirect_to=ROOT))
+    crawler, _ = make_crawler(fetcher)
+
+    await crawler.run()
+
+    assert fetcher.fetched == [ROOT, "https://www.example.com/"]

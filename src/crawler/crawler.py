@@ -14,6 +14,10 @@ from crawler.urls import host_of, is_same_host, normalise_url, origin_of
 
 logger = logging.getLogger(__name__)
 
+# Like a browser's "too many redirects" limit. Real chains are rarely more than
+# 2-3 hops (e.g. http -> https -> www); this stops an endless chain of new URLs.
+MAX_START_REDIRECTS = 10
+
 
 class PageFetcher(Protocol):
     async def fetch(self, url: str) -> FetchResult: ...
@@ -94,8 +98,10 @@ class Crawler:
             raise ValueError(f"Not a valid http(s) URL: {start_url!r}")
         self.start_url = normalised
         self.host = host_of(normalised)
-        # The URL at the end of the start URL's redirect chain so far.
-        self._entry_url = normalised
+        # The URL at the end of the start URL's redirect chain so far, or None
+        # once the chain has been abandoned for being too long.
+        self._entry_url: str | None = normalised
+        self._start_redirects = 0
         self._fetcher = fetcher
         self._on_page = on_page
         self._config = config or CrawlerConfig()
@@ -104,7 +110,7 @@ class Crawler:
         self.stats = CrawlStats()
 
     async def run(self) -> CrawlStats:
-        await self._load_policy()
+        await self._load_policy(self.start_url)
         self._schedule(self.start_url)
         workers = [
             asyncio.create_task(self._worker(), name=f"crawler-worker-{i}")
@@ -166,8 +172,8 @@ class Crawler:
                 )
             )
             if target:
-                if url == self._entry_url:
-                    await self._follow_entry_redirect(target)
+                if url == self._entry_url and not await self._follow_entry_redirect(target):
+                    return
                 self._schedule(target)
             return
 
@@ -183,22 +189,32 @@ class Crawler:
         for link in links:
             self._schedule(link)
 
-    async def _follow_entry_redirect(self, target: str) -> None:
+    async def _follow_entry_redirect(self, target: str) -> bool:
         """Move the crawl to the host the start URL redirects to.
 
+        Returns False, ending the crawl, if the chain exceeds MAX_START_REDIRECTS.
         No locking is needed: while the start URL's redirect chain is being
         followed, it is the only URL in flight.
         """
+        self._start_redirects += 1
+        if self._start_redirects > MAX_START_REDIRECTS:
+            logger.warning(
+                "Start URL redirected more than %d times; giving up", MAX_START_REDIRECTS
+            )
+            self._entry_url = None
+            self.stats.errors += 1
+            return False
         self._entry_url = target
         new_host = host_of(target)
         if new_host != self.host:
             logger.info("Start URL redirects to %s; crawling that host instead", new_host)
             self.host = new_host
-            await self._load_policy()
+            await self._load_policy(target)
+        return True
 
-    async def _load_policy(self) -> None:
+    async def _load_policy(self, url: str) -> None:
         if self._policy is not None:
-            await self._policy.load(origin_of(self._entry_url))
+            await self._policy.load(origin_of(url))
 
     def _report(self, page: PageResult) -> None:
         self.stats.pages_reported += 1
