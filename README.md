@@ -269,6 +269,16 @@ schedule and report progress. A possible design is:
   queried.
 - **Monitoring**: pages per second, errors and queue depth per domain.
 
+### From crawler to data pipeline
+
+If the goal is collecting data over time rather than mapping links once, the priority shifts to the data
+itself. Raw fetches would be stored unchanged with a timestamp, so any past state of a page can be
+reproduced and extraction can be re-run when parsers change. Site-specific parsers would turn pages into
+structured records, with quality checks to catch sites changing their layout, and each record would be
+traceable to its raw fetch and parser version. Pages that build their content with JavaScript would go to
+a separate pool of headless-browser workers, used only where needed because they're much slower and more
+expensive than plain HTTP requests.
+
 ## Future work
 
 - Per-host rate limiting and `Crawl-delay`.
@@ -277,7 +287,6 @@ schedule and report progress. A possible design is:
 - Use `sitemap.xml` to find pages.
 - HTTP/2, to send many requests over one connection.
 - Resume interrupted crawls.
-- JavaScript-rendered sites would need a headless browser, which the brief rules out.
 
 ## Tools
 
